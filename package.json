@@ -1,0 +1,20 @@
+{
+  "name": "xtrabackup-scheduler",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "backup": "node index.js",
+    "restore": "node restore.js"
+  },
+  "private": true,
+  "dependencies": {
+    "@aws-sdk/client-s3": "3.712.0",
+    "axios": "^1.7.9",
+    "dotenv": "^16.5.0",
+    "https-proxy-agent": "^7.0.6",
+    "socks-proxy-agent": "^8.0.5"
+  }
+}

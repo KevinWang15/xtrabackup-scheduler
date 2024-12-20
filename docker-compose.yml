@@ -1,0 +1,42 @@
+version: '3.8'
+
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: mysql8
+    restart: unless-stopped
+    ports:
+      - "59395:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+    volumes:
+      - ./data:/var/lib/mysql
+    command: --default-authentication-plugin=mysql_native_password
+    networks:
+      - mysql_net
+
+  xtrabackup-scheduler:
+    image: ghcr.io/kevinwang15/xtrabackup-scheduler:latest
+    container_name: xtrabackup-scheduler
+    restart: unless-stopped
+    environment:
+      DB_USER: root
+      DB_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      DB_HOST: mysql  # Use the service name, port 3306 is default
+      S3_BUCKET: ${S3_BUCKET}
+      S3_ENDPOINT: ${S3_ENDPOINT}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      BACKUP_DIR: ${BACKUP_DIR:-}
+      HEALTH_CHECK_URL: ${HEALTH_CHECK_URL:-}
+      PROXY: ${PROXY:-}
+    volumes:
+      - ./data:/var/lib/mysql:ro  # Mount MySQL data directory as read-only
+    depends_on:
+      - mysql
+    networks:
+      - mysql_net
+
+networks:
+  mysql_net:
+    driver: bridge
