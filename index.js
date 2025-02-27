@@ -19,7 +19,7 @@ const config = {
   s3Endpoint: process.env.S3_ENDPOINT,
   s3BackupDir: process.env.BACKUP_DIR || "",
   healthCheckUrl: process.env.HEALTH_CHECK_URL,
-  backupInterval: 3 * 60 * 60 * 1000, // 3 hours
+  backupInterval: 1 * 60 * 60 * 1000, // 1 hour
   retentionDays: 30,
   backupRoot: path.join(os.tmpdir(), "mysql-backup-" + process.pid),
 };
