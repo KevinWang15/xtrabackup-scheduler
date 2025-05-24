@@ -331,7 +331,13 @@ async function getCurrentFullBackupDir() {
   );
 
   try {
+    // Check if directory exists
     await fs.access(fullBackupDir);
+    
+    // Also check if the backup checkpoint file exists (indicates a valid backup)
+    const checkpointFile = path.join(fullBackupDir, "xtrabackup_checkpoints");
+    await fs.access(checkpointFile);
+    
     return fullBackupDir;
   } catch {
     return null;
