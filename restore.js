@@ -34,7 +34,7 @@ const config = {
   s3Endpoint: process.env.S3_ENDPOINT,
   s3BackupDir: process.env.BACKUP_DIR || "",
   proxy: process.env.PROXY,
-  restoreRoot: path.join(os.tmpdir(), "mysql-restore-" + process.pid),
+  restoreRoot: path.join(process.cwd(), "mysql-restore-" + new Date().toISOString().slice(0, 19).replace(/[:-]/g, "")),
 };
 
 // Validate environment variables
@@ -335,49 +335,20 @@ async function restoreBackups(backupsToRestore) {
   ]);
 
   log("\n=== Restore preparation complete ===");
-  log(`\nRestored data is available in: ${baseDir}`);
+  log(`\nRestored data is ready in: ${baseDir}`);
   
-  // Ask if user wants to copy back
-  const answer = await getUserInput("\nDo you want to copy the restored data to MySQL data directory? (yes/no): ");
+  log("\n📁 IMPORTANT: The restored data is saved in the above directory.");
+  log("   This directory will NOT be automatically deleted.\n");
   
-  if (answer.toLowerCase() === "yes") {
-    if (!config.dbUser || !config.dbPassword || !config.dbHost) {
-      logError("Database credentials not configured. Please set DB_USER, DB_PASSWORD, and DB_HOST in .env file.");
-      return;
-    }
-    
-    log("\nCopying restored data back to MySQL...");
-    log("WARNING: This will replace your current MySQL data!");
-    
-    const confirm = await getUserInput("Are you SURE you want to proceed? Type 'YES' to confirm: ");
-    
-    if (confirm === "YES") {
-      try {
-        // Stop MySQL first if we have access
-        log("Note: You may need to stop MySQL server manually before running copy-back");
-        
-        await runCommand("xtrabackup", [
-          "--copy-back",
-          `--target-dir=${baseDir}`,
-          "--no-version-check",
-        ]);
-        
-        log("\nRestore complete! Please:");
-        log("1. Ensure proper ownership of MySQL data files (usually mysql:mysql)");
-        log("2. Start MySQL server");
-      } catch (error) {
-        logError("Copy-back failed. You may need to:");
-        logError("1. Stop MySQL server");
-        logError("2. Run the copy-back manually with proper permissions");
-        logError(`3. Command: xtrabackup --copy-back --target-dir=${baseDir}`);
-      }
-    } else {
-      log("Copy-back cancelled.");
-    }
-  }
+  log("To restore this backup to MySQL:");
+  log("1. Stop MySQL server");
+  log("2. Back up your current data directory (just in case)");
+  log("3. Empty your MySQL data directory");
+  log("4. Run: xtrabackup --copy-back --datadir=/var/lib/mysql --target-dir=" + baseDir);
+  log("5. Fix ownership: chown -R mysql:mysql /var/lib/mysql");
+  log("6. Start MySQL server");
   
-  log(`\nYou can manually copy the data from: ${baseDir}`);
-  log("Remember to fix file ownership after copying!");
+  log("\nAlternatively, you can manually copy the files from the restore directory.");
 }
 
 // Main function
@@ -451,13 +422,6 @@ async function main() {
   } catch (error) {
     logError("Restore failed:", error);
     process.exit(1);
-  } finally {
-    // Cleanup
-    try {
-      await fs.rm(config.restoreRoot, { recursive: true, force: true });
-    } catch (e) {
-      // Ignore cleanup errors
-    }
   }
 }
 
