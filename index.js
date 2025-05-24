@@ -65,9 +65,25 @@ function log(...args) {
   console.log(timestamp, ...args);
 }
 
+// Helper function to sanitize error messages
+function sanitizeError(error) {
+  if (error && error.message) {
+    // Replace password in error messages
+    return error.message.replace(/--password=[^\s]+/g, '--password=***');
+  }
+  return error;
+}
+
 function logError(...args) {
   const timestamp = new Date().toISOString();
-  console.error(timestamp, ...args);
+  // Sanitize any Error objects in the arguments
+  const sanitizedArgs = args.map(arg => {
+    if (arg instanceof Error) {
+      return sanitizeError(arg);
+    }
+    return arg;
+  });
+  console.error(timestamp, ...sanitizedArgs);
 }
 
 // Helper function to format dates
@@ -130,9 +146,16 @@ function runCommand(command, args = []) {
       if (code === 0) {
         resolve();
       } else {
+        // Redact sensitive information from error messages
+        const safeArgs = args.map(arg => {
+          if (arg.startsWith("--password=")) {
+            return "--password=***";
+          }
+          return arg;
+        });
         reject(
           new Error(
-            `${command} ${args.join(" ")} failed with exit code ${code}`,
+            `${command} ${safeArgs.join(" ")} failed with exit code ${code}`,
           ),
         );
       }
