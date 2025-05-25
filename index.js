@@ -129,7 +129,9 @@ if (config.proxy) {
   s3ClientConfig.requestHandler = {
     httpsAgent: agent,
   };
-  log(`Using proxy: ${config.proxy}`);
+  // Redact proxy credentials in log
+  const safeProxy = config.proxy.replace(/:\/\/[^@]+@/, '://***@');
+  log(`Using proxy: ${safeProxy}`);
 }
 
 const s3Client = new S3Client(s3ClientConfig);

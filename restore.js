@@ -109,7 +109,9 @@ if (config.proxy) {
   s3ClientConfig.requestHandler = {
     httpsAgent: agent,
   };
-  log(`Using proxy: ${config.proxy}`);
+  // Redact proxy credentials in log
+  const safeProxy = config.proxy.replace(/:\/\/[^@]+@/, '://***@');
+  log(`Using proxy: ${safeProxy}`);
 }
 
 const s3Client = new S3Client(s3ClientConfig);
@@ -322,6 +324,16 @@ async function restoreBackups(backupsToRestore) {
   log("Extracting full backup...");
   await runCommand("tar", ["xzf", fullBackupPath, "-C", baseDir]);
   await fs.unlink(fullBackupPath);
+
+  // If we have incremental backups, prepare the base backup with --apply-log-only
+  if (backupsToRestore.length > 1) {
+    log("\nPreparing base backup for incremental restore...");
+    await runCommand("xtrabackup", [
+      "--prepare",
+      "--apply-log-only",
+      `--target-dir=${baseDir}`,
+    ]);
+  }
 
   // Apply incrementals if any
   for (let i = 1; i < backupsToRestore.length; i++) {
