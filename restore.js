@@ -82,13 +82,13 @@ function logError(...args) {
 // Helper function to get proxy agent based on proxy URL
 function getProxyAgent(proxyUrl) {
   if (!proxyUrl) return undefined;
-  
+
   if (proxyUrl.startsWith("socks") || proxyUrl.startsWith("socks5://")) {
     return new SocksProxyAgent(proxyUrl);
   } else if (proxyUrl.startsWith("http://") || proxyUrl.startsWith("https://")) {
     return new HttpsProxyAgent(proxyUrl);
   }
-  
+
   log(`Warning: Unknown proxy protocol in ${proxyUrl}, using https-proxy-agent`);
   return new HttpsProxyAgent(proxyUrl);
 }
@@ -127,8 +127,8 @@ function formatBytes(bytes) {
 // Helper function to list backups from S3
 async function listBackups() {
   const prefix = config.s3BackupDir
-    ? config.s3BackupDir.replace(/^\/+|\/+$/g, "") + "/"
-    : "";
+      ? config.s3BackupDir.replace(/^\/+|\/+$/g, "") + "/"
+      : "";
 
   const command = new ListObjectsV2Command({
     Bucket: config.s3Bucket,
@@ -145,44 +145,44 @@ async function listBackups() {
 
     // Filter and sort backups
     const backups = response.Contents
-      .filter((obj) => obj.Key.endsWith(".tar.gz"))
-      .map((obj) => {
-        const filename = path.basename(obj.Key);
-        const isIncremental = filename.startsWith("inc_backup_");
-        let date;
-        
-        if (isIncremental) {
-          // inc_backup_YYYYMMDDHHmmss.tar.gz
-          const dateStr = filename.replace("inc_backup_", "").replace(".tar.gz", "");
-          date = new Date(
-            dateStr.substr(0, 4) + "-" +
-            dateStr.substr(4, 2) + "-" +
-            dateStr.substr(6, 2) + "T" +
-            dateStr.substr(8, 2) + ":" +
-            dateStr.substr(10, 2) + ":" +
-            dateStr.substr(12, 2)
-          );
-        } else {
-          // full_backup_YYYYMMDD.tar.gz
-          const dateStr = filename.replace("full_backup_", "").replace(".tar.gz", "");
-          date = new Date(
-            dateStr.substr(0, 4) + "-" +
-            dateStr.substr(4, 2) + "-" +
-            dateStr.substr(6, 2)
-          );
-        }
+        .filter((obj) => obj.Key.endsWith(".tar.gz"))
+        .map((obj) => {
+          const filename = path.basename(obj.Key);
+          const isIncremental = filename.startsWith("inc_backup_");
+          let date;
 
-        return {
-          key: obj.Key,
-          filename: filename,
-          size: obj.Size,
-          date: date,
-          isIncremental: isIncremental,
-          lastModified: obj.LastModified,
-        };
-      })
-      .sort((a, b) => b.date - a.date)
-      .slice(0, 20); // Get only the 20 most recent
+          if (isIncremental) {
+            // inc_backup_YYYYMMDDHHmmss.tar.gz
+            const dateStr = filename.replace("inc_backup_", "").replace(".tar.gz", "");
+            date = new Date(
+                dateStr.substr(0, 4) + "-" +
+                dateStr.substr(4, 2) + "-" +
+                dateStr.substr(6, 2) + "T" +
+                dateStr.substr(8, 2) + ":" +
+                dateStr.substr(10, 2) + ":" +
+                dateStr.substr(12, 2)
+            );
+          } else {
+            // full_backup_YYYYMMDD.tar.gz
+            const dateStr = filename.replace("full_backup_", "").replace(".tar.gz", "");
+            date = new Date(
+                dateStr.substr(0, 4) + "-" +
+                dateStr.substr(4, 2) + "-" +
+                dateStr.substr(6, 2)
+            );
+          }
+
+          return {
+            key: obj.Key,
+            filename: filename,
+            size: obj.Size,
+            date: date,
+            isIncremental: isIncremental,
+            lastModified: obj.LastModified,
+          };
+        })
+        .sort((a, b) => b.date - a.date)
+        .slice(0, 50); // Increased limit from 20 to 50 for more options
 
     return backups;
   } catch (error) {
@@ -194,7 +194,7 @@ async function listBackups() {
 // Helper function to download file from S3
 async function downloadFromS3(key, localPath) {
   log(`Downloading ${key} from S3...`);
-  
+
   const command = new GetObjectCommand({
     Bucket: config.s3Bucket,
     Key: key,
@@ -203,14 +203,14 @@ async function downloadFromS3(key, localPath) {
   try {
     const response = await s3Client.send(command);
     const stream = response.Body;
-    
+
     // Convert stream to buffer
     const chunks = [];
     for await (const chunk of stream) {
       chunks.push(chunk);
     }
     const buffer = Buffer.concat(chunks);
-    
+
     await fs.writeFile(localPath, buffer);
     log(`Downloaded ${key} to ${localPath}`);
   } catch (error) {
@@ -222,9 +222,9 @@ async function downloadFromS3(key, localPath) {
 // Helper function to run commands with streaming output
 function runCommand(command, args = [], options = {}) {
   return new Promise((resolve, reject) => {
-    const proc = spawn(command, args, { 
+    const proc = spawn(command, args, {
       stdio: ["ignore", "pipe", "pipe"],
-      ...options 
+      ...options
     });
 
     proc.stdout.pipe(process.stdout);
@@ -242,9 +242,9 @@ function runCommand(command, args = [], options = {}) {
           return arg;
         });
         reject(
-          new Error(
-            `${command} ${safeArgs.join(" ")} failed with exit code ${code}`,
-          ),
+            new Error(
+                `${command} ${safeArgs.join(" ")} failed with exit code ${code}`,
+            ),
         );
       }
     });
@@ -266,44 +266,31 @@ function getUserInput(question) {
   });
 }
 
-// Function to find related backups
+// FIXED: This function is updated to handle the "differential" backup strategy where
+// each incremental backup is based on the original full backup of the day.
 function findRelatedBackups(backups, selectedBackup) {
-  const relatedBackups = [];
-  
   if (selectedBackup.isIncremental) {
-    // Find the full backup for this incremental
+    // An incremental backup requires its corresponding full backup for the same day.
     const incDate = selectedBackup.date;
     const dateStr = incDate.toISOString().slice(0, 10).replace(/-/g, "");
-    
-    // Find the full backup from the same day
+    const fullBackupFilename = `full_backup_${dateStr}.tar.gz`;
+
     const fullBackup = backups.find(
-      (b) => !b.isIncremental && b.filename === `full_backup_${dateStr}.tar.gz`
+        (b) => !b.isIncremental && b.filename === fullBackupFilename
     );
-    
+
     if (!fullBackup) {
-      throw new Error(`Cannot find full backup for date ${dateStr}. Incremental backups cannot be restored without their base full backup.`);
+      throw new Error(
+          `Critical error: Cannot find the required full backup '${fullBackupFilename}' for the selected incremental backup. Cannot proceed with restore.`
+      );
     }
-    
-    relatedBackups.push(fullBackup);
-    
-    // Find all incrementals between the full backup and selected incremental
-    const incrementals = backups
-      .filter(
-        (b) =>
-          b.isIncremental &&
-          b.date >= fullBackup.date &&
-          b.date <= selectedBackup.date &&
-          b.filename.startsWith(`inc_backup_${dateStr}`)
-      )
-      .sort((a, b) => a.date - b.date);
-    
-    relatedBackups.push(...incrementals);
+
+    // The restore chain consists of ONLY the full backup and the single selected incremental.
+    return [fullBackup, selectedBackup];
   } else {
-    // Just the full backup
-    relatedBackups.push(selectedBackup);
+    // If a full backup is selected, only that backup is needed.
+    return [selectedBackup];
   }
-  
-  return relatedBackups;
 }
 
 // Function to restore backups
@@ -317,16 +304,18 @@ async function restoreBackups(backupsToRestore) {
   // Download and extract full backup first
   const fullBackup = backupsToRestore[0];
   log(`\n1. Restoring full backup: ${fullBackup.filename}`);
-  
+
   const fullBackupPath = path.join(config.restoreRoot, fullBackup.filename);
   await downloadFromS3(fullBackup.key, fullBackupPath);
-  
+
   log("Extracting full backup...");
   await runCommand("tar", ["xzf", fullBackupPath, "-C", baseDir]);
   await fs.unlink(fullBackupPath);
 
-  // If we have incremental backups, prepare the base backup with --apply-log-only
-  if (backupsToRestore.length > 1) {
+  // If we have an incremental backup, it must be prepared.
+  const hasIncrementals = backupsToRestore.length > 1;
+
+  if (hasIncrementals) {
     log("\nPreparing base backup for incremental restore...");
     await runCommand("xtrabackup", [
       "--prepare",
@@ -335,34 +324,36 @@ async function restoreBackups(backupsToRestore) {
     ]);
   }
 
-  // Apply incrementals if any
-  for (let i = 1; i < backupsToRestore.length; i++) {
-    const incBackup = backupsToRestore[i];
-    log(`\n${i + 1}. Applying incremental backup: ${incBackup.filename}`);
-    
+  // Apply the single incremental if it exists
+  if (hasIncrementals) {
+    const incBackup = backupsToRestore[1];
+    log(`\n2. Applying incremental backup: ${incBackup.filename}`);
+
     const incBackupPath = path.join(config.restoreRoot, incBackup.filename);
-    const incDir = path.join(config.restoreRoot, `inc_${i}`);
-    
+    const incDir = path.join(config.restoreRoot, 'inc_1');
+
     await downloadFromS3(incBackup.key, incBackupPath);
     await fs.mkdir(incDir, { recursive: true });
-    
+
     log("Extracting incremental backup...");
     await runCommand("tar", ["xzf", incBackupPath, "-C", incDir]);
     await fs.unlink(incBackupPath);
-    
-    log("Preparing incremental backup...");
+
+    log("Applying incremental data to the base...");
+    // We can apply and finalize in one go if it's the only incremental.
+    // However, keeping the two-step prepare is more robust and explicit.
     await runCommand("xtrabackup", [
       "--prepare",
       "--apply-log-only",
       `--target-dir=${baseDir}`,
       `--incremental-dir=${incDir}`,
     ]);
-    
+
     // Clean up incremental directory
     await fs.rm(incDir, { recursive: true, force: true });
   }
 
-  // Final prepare
+  // Final prepare (rolls back uncommitted transactions)
   log("\nRunning final prepare...");
   await runCommand("xtrabackup", [
     "--prepare",
@@ -371,10 +362,10 @@ async function restoreBackups(backupsToRestore) {
 
   log("\n=== Restore preparation complete ===");
   log(`\nRestored data is ready in: ${baseDir}`);
-  
+
   log("\n📁 IMPORTANT: The restored data is saved in the above directory.");
   log("   This directory will NOT be automatically deleted.\n");
-  
+
   log("To restore this backup to MySQL:");
   log("1. Stop MySQL server");
   log("2. Back up your current data directory (just in case)");
@@ -382,7 +373,7 @@ async function restoreBackups(backupsToRestore) {
   log("4. Run: xtrabackup --copy-back --datadir=/var/lib/mysql --target-dir=" + baseDir);
   log("5. Fix ownership: chown -R mysql:mysql /var/lib/mysql");
   log("6. Start MySQL server");
-  
+
   log("\nAlternatively, you can manually copy the files from the restore directory.");
 }
 
@@ -390,70 +381,70 @@ async function restoreBackups(backupsToRestore) {
 async function main() {
   try {
     log("=== XtraBackup Restore Tool ===\n");
-    
+
     // List backups
     log("Fetching backup list from S3...");
     const backups = await listBackups();
-    
+
     if (backups.length === 0) {
       log("No backups found.");
       return;
     }
-    
+
     // Display backups
     console.log("\nAvailable backups (most recent first):");
     console.log("─".repeat(80));
     console.log("No. | Type        | Date & Time          | Size      | Filename");
     console.log("─".repeat(80));
-    
+
     backups.forEach((backup, index) => {
       const type = backup.isIncremental ? "Incremental" : "Full      ";
       const dateStr = backup.date.toISOString().replace("T", " ").slice(0, 19);
       const sizeStr = formatBytes(backup.size).padEnd(9);
       console.log(
-        `${(index + 1).toString().padStart(2)}. | ${type} | ${dateStr} | ${sizeStr} | ${backup.filename}`
+          `${(index + 1).toString().padStart(2)}. | ${type} | ${dateStr} | ${sizeStr} | ${backup.filename}`
       );
     });
     console.log("─".repeat(80));
-    
+
     // Get user selection
     const selection = await getUserInput("\nEnter backup number to restore (or 'q' to quit): ");
-    
+
     if (selection.toLowerCase() === "q") {
       log("Restore cancelled.");
       return;
     }
-    
+
     const selectedIndex = parseInt(selection) - 1;
     if (isNaN(selectedIndex) || selectedIndex < 0 || selectedIndex >= backups.length) {
       logError("Invalid selection.");
       return;
     }
-    
+
     const selectedBackup = backups[selectedIndex];
     log(`\nSelected: ${selectedBackup.filename}`);
-    
+
     // Find all related backups needed for restore
     const backupsToRestore = findRelatedBackups(backups, selectedBackup);
-    
-    log("\nBackups required for restore:");
+
+    log("\nBackups required for this restore:");
     backupsToRestore.forEach((backup, index) => {
-      log(`  ${index + 1}. ${backup.filename} (${formatBytes(backup.size)})`);
+      log(` ${index + 1}. ${backup.filename} (${formatBytes(backup.size)})`);
     });
-    
+
     const proceed = await getUserInput("\nProceed with restore? (yes/no): ");
-    
+
     if (proceed.toLowerCase() !== "yes") {
       log("Restore cancelled.");
       return;
     }
-    
+
     // Create restore directory
     await fs.mkdir(config.restoreRoot, { recursive: true });
-    
+
     // Perform restore
     await restoreBackups(backupsToRestore);
-    
+
   } catch (error) {
     logError("Restore failed:", error);
     process.exit(1);
