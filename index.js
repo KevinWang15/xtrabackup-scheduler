@@ -2,6 +2,7 @@ import { spawn } from "child_process";
 import fs from "fs/promises";
 import path from "path";
 import os from "os";
+import crypto from "crypto";
 import {
   S3Client,
   PutObjectCommand,
@@ -25,6 +26,13 @@ if (dbHost && dbHost.includes(":")) {
   dbPort = parts[1];
 }
 
+// Helper function to generate 8-char hex hash from hostname
+function getHostnameHash() {
+  const hostname = os.hostname();
+  const hash = crypto.createHash('sha256').update(hostname).digest('hex');
+  return hash.substring(0, 8);
+}
+
 // Configuration
 const config = {
   dbUser: process.env.DB_USER,
@@ -38,7 +46,7 @@ const config = {
   proxy: process.env.PROXY,
   backupInterval: 1 * 60 * 60 * 1000, // 1 hour
   retentionDays: 30,
-  backupRoot: path.join(os.tmpdir(), "mysql-backup-" + process.pid),
+  backupRoot: process.env.BACKUP_ROOT || path.join(os.tmpdir(), `xtrabackup-staging-${getHostnameHash()}`),
 };
 
 // Validate environment variables
@@ -239,6 +247,11 @@ async function cleanupOldDirectories(currentDate) {
 async function performFullBackup() {
   const currentDate = formatDate();
   const backupDir = path.join(config.backupRoot, `full_backup_${currentDate}`);
+  const tarFile = path.join(
+    config.backupRoot,
+    `full_backup_${currentDate}.tar.gz`,
+  );
+  let tarFileCreated = false;
 
   log("Performing full backup...");
 
@@ -260,38 +273,49 @@ async function performFullBackup() {
     ]);
 
     log("Backup complete. Now creating tar archive for full backup...");
-    const tarFile = path.join(
-      config.backupRoot,
-      `full_backup_${currentDate}.tar.gz`,
-    );
     await runCommand("tar", ["czf", tarFile, "-C", backupDir, "."]);
+    tarFileCreated = true;
 
     log(`Full backup tar created at ${tarFile}. Uploading to B2...`);
     await uploadToB2(tarFile, path.basename(tarFile));
-
-    // Cleanup tar file
-    await fs.unlink(tarFile);
-    log(`Tar file ${tarFile} removed after upload.`);
 
     log("Full backup completed successfully");
     return backupDir;
   } catch (error) {
     logError("Error during full backup:", error);
     throw error;
+  } finally {
+    // Always cleanup tar file if it was created
+    if (tarFileCreated) {
+      try {
+        await fs.unlink(tarFile);
+        log(`Tar file ${tarFile} removed after upload.`);
+      } catch (cleanupError) {
+        logError(`Error removing tar file ${tarFile}:`, cleanupError);
+      }
+    }
   }
 }
 
 // Function to perform incremental backup
 async function performIncrementalBackup(baseDir) {
   const currentDateTime = formatDateTime();
+  const incrementalDir = path.join(
+    config.backupRoot,
+    `inc_backup_${currentDateTime}`,
+  );
+  const tarFile = path.join(
+    config.backupRoot,
+    `inc_backup_${currentDateTime}.tar.gz`,
+  );
+  let tarFileCreated = false;
+  let incrementalDirCreated = false;
+
   log("Performing incremental backup...");
 
   try {
-    const incrementalDir = path.join(
-      config.backupRoot,
-      `inc_backup_${currentDateTime}`,
-    );
     await fs.mkdir(incrementalDir, { recursive: true });
+    incrementalDirCreated = true;
 
     await runCommand("xtrabackup", [
       "--backup",
@@ -305,24 +329,34 @@ async function performIncrementalBackup(baseDir) {
     ]);
 
     log("Incremental backup complete. Creating tar archive...");
-    const tarFile = path.join(
-      config.backupRoot,
-      `inc_backup_${currentDateTime}.tar.gz`,
-    );
     await runCommand("tar", ["czf", tarFile, "-C", incrementalDir, "."]);
+    tarFileCreated = true;
 
     log(`Incremental backup tar created at ${tarFile}. Uploading to B2...`);
     await uploadToB2(tarFile, path.basename(tarFile));
-
-    // Cleanup
-    await fs.unlink(tarFile);
-    await fs.rm(incrementalDir, { recursive: true, force: true });
-    log(`Tar file ${tarFile} and incremental directory removed after upload.`);
 
     log("Incremental backup completed successfully");
   } catch (error) {
     logError("Error during incremental backup:", error);
     throw error;
+  } finally {
+    // Always cleanup temporary files and directories
+    if (tarFileCreated) {
+      try {
+        await fs.unlink(tarFile);
+        log(`Tar file ${tarFile} removed after upload.`);
+      } catch (cleanupError) {
+        logError(`Error removing tar file ${tarFile}:`, cleanupError);
+      }
+    }
+    if (incrementalDirCreated) {
+      try {
+        await fs.rm(incrementalDir, { recursive: true, force: true });
+        log(`Incremental directory ${incrementalDir} removed after upload.`);
+      } catch (cleanupError) {
+        logError(`Error removing incremental directory ${incrementalDir}:`, cleanupError);
+      }
+    }
   }
 }
 
@@ -371,24 +405,39 @@ async function getCurrentFullBackupDir() {
 
 // Main backup function
 async function runBackup() {
-  try {
-    let baseDir = await getCurrentFullBackupDir();
+  const maxRetries = 3;
+  const retryDelay = 15 * 60 * 1000; // 15 minutes
 
-    if (!baseDir) {
-      log("No full backup for today found. Starting a new full backup.");
-      await performFullBackup();
-    } else {
-      log("Found today's full backup. Performing incremental backup.");
-      await performIncrementalBackup(baseDir);
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      let baseDir = await getCurrentFullBackupDir();
+
+      if (!baseDir) {
+        log("No full backup for today found. Starting a new full backup.");
+        await performFullBackup();
+      } else {
+        log("Found today's full backup. Performing incremental backup.");
+        await performIncrementalBackup(baseDir);
+      }
+
+      log("Cleaning up old backups...");
+      await cleanupOldBackups();
+
+      await pingHealthcheck();
+
+      // Success - break out of retry loop
+      return;
+    } catch (error) {
+      logError(`Backup failed (attempt ${attempt}/${maxRetries}):`, error);
+
+      if (attempt < maxRetries) {
+        log(`Will retry in ${retryDelay / (60 * 1000)} minutes...`);
+        await new Promise((resolve) => setTimeout(resolve, retryDelay));
+      } else {
+        logError("All backup retry attempts exhausted. Exiting.");
+        process.exit(1);
+      }
     }
-
-    log("Cleaning up old backups...");
-    await cleanupOldBackups();
-
-    await pingHealthcheck();
-  } catch (error) {
-    logError("Backup failed:", error);
-    process.exit(1);
   }
 }
 
@@ -396,7 +445,7 @@ async function runBackup() {
 async function main() {
   // Create backup root directory on startup
   await fs.mkdir(config.backupRoot, { recursive: true });
-  log(`Created backup directory: ${config.backupRoot}`);
+  log(`Using backup directory: ${config.backupRoot}`);
 
   while (true) {
     await runBackup();
