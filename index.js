@@ -243,6 +243,40 @@ async function cleanupOldDirectories(currentDate) {
   }
 }
 
+// Janitor function to clean up stray files from crashes (SIGKILL/OOM)
+async function sweepLocalStaging() {
+  const entries = await fs.readdir(config.backupRoot).catch(() => []);
+
+  for (const e of entries) {
+    const p = path.join(config.backupRoot, e);
+
+    // Remove all tarballs and inc dirs (they should never persist)
+    if (e.endsWith('.tar.gz') || e.startsWith('inc_backup_')) {
+      try {
+        await fs.rm(p, { recursive: true, force: true });
+        log(`Cleaned up stray file/directory: ${e}`);
+      } catch (error) {
+        logError(`Error removing ${p}:`, error);
+      }
+      continue;
+    }
+
+    // If today's full backup exists but is incomplete (no checkpoints), wipe it
+    if (e === `full_backup_${formatDate()}`) {
+      try {
+        await fs.access(path.join(p, 'xtrabackup_checkpoints'));
+      } catch {
+        try {
+          await fs.rm(p, { recursive: true, force: true });
+          log(`Removed incomplete full backup: ${e}`);
+        } catch (error) {
+          logError(`Error removing incomplete backup ${p}:`, error);
+        }
+      }
+    }
+  }
+}
+
 // Function to perform full backup
 async function performFullBackup() {
   const currentDate = formatDate();
@@ -251,7 +285,6 @@ async function performFullBackup() {
     config.backupRoot,
     `full_backup_${currentDate}.tar.gz`,
   );
-  let tarFileCreated = false;
 
   log("Performing full backup...");
 
@@ -274,7 +307,6 @@ async function performFullBackup() {
 
     log("Backup complete. Now creating tar archive for full backup...");
     await runCommand("tar", ["czf", tarFile, "-C", backupDir, "."]);
-    tarFileCreated = true;
 
     log(`Full backup tar created at ${tarFile}. Uploading to B2...`);
     await uploadToB2(tarFile, path.basename(tarFile));
@@ -285,15 +317,8 @@ async function performFullBackup() {
     logError("Error during full backup:", error);
     throw error;
   } finally {
-    // Always cleanup tar file if it was created
-    if (tarFileCreated) {
-      try {
-        await fs.unlink(tarFile);
-        log(`Tar file ${tarFile} removed after upload.`);
-      } catch (cleanupError) {
-        logError(`Error removing tar file ${tarFile}:`, cleanupError);
-      }
-    }
+    // Always cleanup tar file (including partial files from tar failures)
+    await fs.rm(tarFile, { force: true }).catch(() => {});
   }
 }
 
@@ -308,14 +333,11 @@ async function performIncrementalBackup(baseDir) {
     config.backupRoot,
     `inc_backup_${currentDateTime}.tar.gz`,
   );
-  let tarFileCreated = false;
-  let incrementalDirCreated = false;
 
   log("Performing incremental backup...");
 
   try {
     await fs.mkdir(incrementalDir, { recursive: true });
-    incrementalDirCreated = true;
 
     await runCommand("xtrabackup", [
       "--backup",
@@ -330,7 +352,6 @@ async function performIncrementalBackup(baseDir) {
 
     log("Incremental backup complete. Creating tar archive...");
     await runCommand("tar", ["czf", tarFile, "-C", incrementalDir, "."]);
-    tarFileCreated = true;
 
     log(`Incremental backup tar created at ${tarFile}. Uploading to B2...`);
     await uploadToB2(tarFile, path.basename(tarFile));
@@ -340,23 +361,9 @@ async function performIncrementalBackup(baseDir) {
     logError("Error during incremental backup:", error);
     throw error;
   } finally {
-    // Always cleanup temporary files and directories
-    if (tarFileCreated) {
-      try {
-        await fs.unlink(tarFile);
-        log(`Tar file ${tarFile} removed after upload.`);
-      } catch (cleanupError) {
-        logError(`Error removing tar file ${tarFile}:`, cleanupError);
-      }
-    }
-    if (incrementalDirCreated) {
-      try {
-        await fs.rm(incrementalDir, { recursive: true, force: true });
-        log(`Incremental directory ${incrementalDir} removed after upload.`);
-      } catch (cleanupError) {
-        logError(`Error removing incremental directory ${incrementalDir}:`, cleanupError);
-      }
-    }
+    // Always cleanup temporary files and directories (including partial tar files)
+    await fs.rm(tarFile, { force: true }).catch(() => {});
+    await fs.rm(incrementalDir, { recursive: true, force: true }).catch(() => {});
   }
 }
 
@@ -408,6 +415,9 @@ async function runBackup() {
   const maxRetries = 3;
   const retryDelay = 15 * 60 * 1000; // 15 minutes
 
+  // Clean up stray files before each backup run
+  await sweepLocalStaging();
+
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
       let baseDir = await getCurrentFullBackupDir();
@@ -446,6 +456,10 @@ async function main() {
   // Create backup root directory on startup
   await fs.mkdir(config.backupRoot, { recursive: true });
   log(`Using backup directory: ${config.backupRoot}`);
+
+  // Clean up any stray files from previous crashes on startup
+  log("Running startup cleanup...");
+  await sweepLocalStaging();
 
   while (true) {
     await runBackup();
