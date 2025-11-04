@@ -1,5 +1,6 @@
 import { spawn } from "child_process";
 import fs from "fs/promises";
+import { createReadStream } from "fs";
 import path from "path";
 import os from "os";
 import crypto from "crypto";
@@ -9,6 +10,7 @@ import {
   ListObjectsCommand,
   DeleteObjectCommand,
 } from "@aws-sdk/client-s3";
+import { Upload } from "@aws-sdk/lib-storage";
 import axios from "axios";
 import dotenv from "dotenv";
 import { HttpsProxyAgent } from "https-proxy-agent";
@@ -110,13 +112,13 @@ function formatDateTime(date = new Date()) {
 // Helper function to get proxy agent based on proxy URL
 function getProxyAgent(proxyUrl) {
   if (!proxyUrl) return undefined;
-  
+
   if (proxyUrl.startsWith("socks") || proxyUrl.startsWith("socks5://")) {
     return new SocksProxyAgent(proxyUrl);
   } else if (proxyUrl.startsWith("http://") || proxyUrl.startsWith("https://")) {
     return new HttpsProxyAgent(proxyUrl);
   }
-  
+
   log(`Warning: Unknown proxy protocol in ${proxyUrl}, using https-proxy-agent`);
   return new HttpsProxyAgent(proxyUrl);
 }
@@ -176,18 +178,26 @@ function runCommand(command, args = []) {
 // Helper function to upload to B2
 async function uploadToB2(filePath, key) {
   log(`Uploading ${filePath} to B2 with key: ${key}`);
-  const fileContent = await fs.readFile(filePath);
   const s3Key = config.s3BackupDir
     ? `${config.s3BackupDir.replace(/^\/+|\/+$/g, "")}/${key}`
     : key;
-  await s3Client.send(
-    new PutObjectCommand({
-      Bucket: config.s3Bucket,
-      Key: s3Key,
-      Body: fileContent,
-    }),
-  );
-  log(`Upload of ${filePath} as ${s3Key} completed.`);
+
+    // Stream the file and use multipart upload for large objects
+    const bodyStream = createReadStream(filePath);
+    const uploader = new Upload({
+        client: s3Client,
+        params: {
+            Bucket: config.s3Bucket,
+            Key: s3Key,
+            Body: bodyStream,
+        },
+        // Tune as desired; 16 MiB parts keeps memory modest and exceeds 5 MiB minimum.
+        partSize: 16 * 1024 * 1024,
+        queueSize: 4,
+        leavePartsOnError: false,
+    });
+    await uploader.done();
+    log(`Upload of ${filePath} as ${s3Key} completed.`);
 }
 
 // Helper function to cleanup old backups in B2
@@ -372,14 +382,14 @@ async function pingHealthcheck() {
   if (config.healthCheckUrl) {
     try {
       const axiosConfig = { timeout: 10000 };
-      
+
       // Add proxy configuration if provided
       if (config.proxy) {
         const agent = getProxyAgent(config.proxy);
         axiosConfig.httpsAgent = agent;
         axiosConfig.httpAgent = agent;
       }
-      
+
       await axios.get(config.healthCheckUrl, axiosConfig);
       log("Successfully pinged healthcheck");
     } catch (error) {
@@ -399,11 +409,11 @@ async function getCurrentFullBackupDir() {
   try {
     // Check if directory exists
     await fs.access(fullBackupDir);
-    
+
     // Also check if the backup checkpoint file exists (indicates a valid backup)
     const checkpointFile = path.join(fullBackupDir, "xtrabackup_checkpoints");
     await fs.access(checkpointFile);
-    
+
     return fullBackupDir;
   } catch {
     return null;
